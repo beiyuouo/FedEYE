@@ -1,0 +1,41 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fl-uploader
+  labels:
+    fateMoudle: fl-uploader
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      fateMoudle: fl-uploader
+  template:
+    metadata:
+      labels:
+        fateMoudle: fl-uploader
+    spec:
+      containers:
+        - image: registry.cn-beijing.aliyuncs.com/sdaict/fl-datauploader:<BUILD_TAG>-<ARCH>
+          imagePullPolicy: IfNotPresent
+          name: fl-uploader
+          ports:
+            - containerPort: 8080
+      restartPolicy: Always
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fl-uploader
+  labels:
+    fateMoudle: fl-uploader
+spec:
+  ports:
+    - name: "tcp-uploader"
+      port: 8080
+      targetPort: 8080
+      protocol: TCP
+  type: NodePort
+  selector:
+    fateMoudle: fl-uploader

@@ -1,0 +1,41 @@
+pipeline {  
+  agent {
+    label 'go'
+  }
+   
+  environment {
+    // 您 Docker Hub 仓库的地址
+    REGISTRY = 'docker.io'
+    // 您的 Docker Hub 用户名
+    DOCKERHUB_USERNAME = 'ryanmusk'
+    // Docker 镜像名称
+    APP_NAME = 'fledge'
+    // 'dockerhubid' 是您在 KubeSphere 用 Docker Hub 访问令牌创建的凭证 ID
+    DOCKERHUB_CREDENTIAL = credentials('dockerhub')
+    // 您在 KubeSphere 创建的 kubeconfig 凭证 ID
+    // KUBECONFIG_CREDENTIAL_ID = 'go'
+    // 您在 KubeSphere 创建的项目名称，不是 DevOps 项目名称
+    PROJECT_NAME = 'fledge'
+  }
+   
+  stages {
+    stage('docker login') {
+      steps{
+        container ('go') {
+          sh 'echo $DOCKERHUB_CREDENTIAL_PSW | docker login -u $DOCKERHUB_CREDENTIAL_USR --password-stdin'
+        }
+      }
+    }
+   
+    stage('build & push') {
+      steps {
+        container ('go') {
+          sh 'git clone http://192.168.66.6:30157/fllearning/fledge.git'
+          sh 'cd fledge && docker build -t $REGISTRY/$DOCKERHUB_USERNAME/$APP_NAME .'
+          sh 'docker push $REGISTRY/$DOCKERHUB_USERNAME/$APP_NAME'
+        }
+      }
+    }
+
+  }
+}

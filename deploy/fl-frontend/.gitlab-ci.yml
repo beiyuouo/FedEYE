@@ -1,0 +1,132 @@
+default:
+  image: docker
+
+variables:
+  # 镜像名称
+  IMAGE_NAME: fl-health-frontend
+  # 镜像目录
+  IMAGE_URL: sdaict
+  # K8S命名空间
+  DEPLOY_NAMESPACE: fml-console
+  # 阿里云镜像仓库地址
+  ALIYUNCS_ADDRESS: # setup from CI/CD variable page
+  # 阿里云账号
+  ALIYUNCS_USERNAME: # setup from CI/CD variable page
+  # 阿里云密码
+  ALIYUNCS_PASSWORD: # setup from CI/CD variable page
+  # Harbor地址（git启用Harbor集成后自动生成）
+  #HARBOR_HOST：
+  # Harbor账号（git启用Harbor集成后自动生成）
+  #HARBOR_USERNAME:
+  # Harbor密码（git启用Harbor集成后自动生成）
+  #HARBOR_PASSWORD:
+  # Harbor项目名称（git启用Harbor集成后自动生成）
+  #HARBOR_PROJECT:
+
+stages:
+  - build
+  - release
+  - deploy
+
+# 缓存
+cache:
+  - key: npm-cache
+    paths:
+      - .npm/
+
+# 判断自动执行或手动执行，同时获取commit_tag：分支标识
+.get_image_tag: &get_image_tag
+  rules:
+    # 主干版本：推送至platform环境
+    - if: $CI_COMMIT_REF_NAME == "master"
+      variables:
+        IMAGE_TAG: 'unicom-master-${CI_COMMIT_SHORT_SHA}'
+        # K8S目录名称
+        DEPLOY_NAME: "fl-platform-frontend"
+        # 访问的后端服务
+        PROXY_PASS: "http://fl-platform-backend:8080/jeecg-boot/"
+      when: on_success
+    # 功能分支版本：推送至platform环境
+    - if: $CI_COMMIT_REF_NAME =~ /feature/ && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "master"
+      variables:
+        IMAGE_TAG: 'unicom-feature-${CI_COMMIT_SHORT_SHA}'
+        # K8S目录名称
+        DEPLOY_NAME: "fl-platform-frontend"
+        # 访问的后端服务
+        PROXY_PASS: "http://fl-platform-backend:8080/jeecg-boot/"
+      when: manual
+    # 测试分支版本：推送至unicom uat环境
+    - if: $CI_COMMIT_TAG =~ /^staging\//
+      variables:
+        IMAGE_TAG: ${CI_COMMIT_TAG}
+        # K8S目录名称
+        DEPLOY_NAME: "fl-unicom-frontend"
+        # 访问的后端服务
+        PROXY_PASS: "http://fl-unicom-backend:8080/jeecg-boot/"
+      when: on_success
+
+# job：npm打包
+npm-build:
+  stage: build
+  image: node:12.18.3
+  before_script:
+    - npm config set registry https://registry.npm.taobao.org/
+    - npm install
+  script:
+    - npm run build
+  rules:
+    - if: $CI_COMMIT_REF_NAME == "master" || $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "master" || $CI_COMMIT_TAG =~ /^staging\//
+      when: on_success
+  artifacts:
+    name: "$CI_JOB_NAME-$CI_COMMIT_REF_NAME"
+    expire_in: 3 day
+    paths:
+      - dist/
+
+# job:打包镜像，推送至阿里云
+image-release-aliyun:
+  stage: release
+  <<: *get_image_tag
+  image:
+    name: gcr.io/kaniko-project/executor:v1.9.0-debug
+    entrypoint: [""]
+  script:
+    - echo "{\"auths\":{\"${ALIYUNCS_ADDRESS}\":{\"auth\":\"$(printf "%s:%s" "${ALIYUNCS_USERNAME}" "${ALIYUNCS_PASSWORD}" | base64 | tr -d '\n')\"}}}" > /kaniko/.docker/config.json
+    - /kaniko/executor
+      --context "./"
+      --build-arg PROXY_PASS=${PROXY_PASS}
+      --dockerfile "./Dockerfile"
+      --destination "${ALIYUNCS_ADDRESS}/${IMAGE_URL}/${IMAGE_NAME}:${IMAGE_TAG//\//-}"
+
+# Harbor：使用kaniko推送Docker镜像
+image-release-harbor:
+  stage: release
+  <<: *get_image_tag
+  image:
+    name: gcr.io/kaniko-project/executor:v1.9.0-debug
+    entrypoint: [ "" ]
+  script:
+    - mkdir -p /kaniko/.docker
+    - echo "{\"auths\":{\"${HARBOR_HOST}\":{\"auth\":\"$(echo -n ${HARBOR_USERNAME}:${HARBOR_PASSWORD} | base64)\"}}}" > /kaniko/.docker/config.json
+    - /kaniko/executor
+      --context "./"
+      --build-arg PROXY_PASS=${PROXY_PASS}
+      --dockerfile "./Dockerfile"
+      --destination "${HARBOR_HOST}/${HARBOR_PROJECT}/${IMAGE_NAME}:${IMAGE_TAG//\//-}"
+
+# K8S 部署
+deploy-kube:
+  stage: deploy
+  <<: *get_image_tag
+  image:
+    name: bitnami/kubectl:latest
+    entrypoint: [ "" ]
+  variables:
+    GIT_STRATEGY: none
+  before_script:
+    - export KUBECONFIG=$SDAICT_KUBE_CONFIG
+  script:
+    - echo "kubectl set image deploy/${DEPLOY_NAME} ${DEPLOY_NAME}=${ALIYUNCS_ADDRESS}/${IMAGE_URL}/${IMAGE_NAME}:${IMAGE_TAG//\//-}"
+    - kubectl set image deploy/${DEPLOY_NAME} ${DEPLOY_NAME}="${ALIYUNCS_ADDRESS}/${IMAGE_URL}/${IMAGE_NAME}:${IMAGE_TAG//\//-}" -n ${DEPLOY_NAMESPACE}
+    - kubectl rollout restart deployment/${DEPLOY_NAME}  -n ${DEPLOY_NAMESPACE}
+
